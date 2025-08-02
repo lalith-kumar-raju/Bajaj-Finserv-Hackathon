@@ -19,11 +19,19 @@ class VectorStore:
     def _initialize_pinecone(self):
         """Initialize Pinecone client and index using new API"""
         try:
+            # Validate API key
+            if not self.config.PINECONE_API_KEY or self.config.PINECONE_API_KEY == "your_pinecone_api_key_here":
+                raise Exception("Pinecone API key not configured. Please set PINECONE_API_KEY environment variable.")
+            
             # Initialize Pinecone with new API
             self.pinecone = Pinecone(api_key=self.config.PINECONE_API_KEY)
             
             # Check if index exists, create if not
-            if self.config.PINECONE_INDEX_NAME not in self.pinecone.list_indexes().names():
+            existing_indexes = self.pinecone.list_indexes().names()
+            logger.info(f"Available Pinecone indexes: {existing_indexes}")
+            
+            if self.config.PINECONE_INDEX_NAME not in existing_indexes:
+                logger.info(f"Creating new Pinecone index: {self.config.PINECONE_INDEX_NAME}")
                 self.pinecone.create_index(
                     name=self.config.PINECONE_INDEX_NAME,
                     dimension=384,  # Dimension for all-MiniLM-L6-v2
@@ -33,14 +41,25 @@ class VectorStore:
                         region="us-east-1"  # Changed to us-east-1
                     )
                 )
+                logger.info(f"✅ Successfully created Pinecone index: {self.config.PINECONE_INDEX_NAME}")
+            else:
+                logger.info(f"✅ Using existing Pinecone index: {self.config.PINECONE_INDEX_NAME}")
             
             self.index = self.pinecone.Index(self.config.PINECONE_INDEX_NAME)
-            logger.info("Pinecone initialized successfully with new API")
+            logger.info("✅ Pinecone initialized successfully with new API")
+            
+            # Test the connection
+            stats = self.index.describe_index_stats()
+            logger.info(f"✅ Pinecone connection verified. Index stats: {stats.total_vector_count} vectors")
             
         except Exception as e:
-            logger.error(f"Error initializing Pinecone: {e}")
-            # Fallback to in-memory storage for development
-            self.index = None
+            logger.error(f"❌ Error initializing Pinecone: {e}")
+            logger.error("Please check your Pinecone configuration:")
+            logger.error("1. PINECONE_API_KEY environment variable")
+            logger.error("2. PINECONE_ENVIRONMENT environment variable") 
+            logger.error("3. PINECONE_INDEX_NAME environment variable")
+            logger.error("4. Internet connection and Pinecone service availability")
+            raise Exception(f"Pinecone initialization failed: {str(e)}")
     
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for a list of texts"""
@@ -53,14 +72,14 @@ class VectorStore:
     
     def store_chunks(self, chunks: List[DocumentChunk]) -> bool:
         """Store document chunks in vector database"""
-        if not self.index:
-            logger.warning("Pinecone not available, using fallback storage")
-            return False
-        
         try:
+            logger.info(f"🚀 Starting to store {len(chunks)} chunks in Pinecone...")
+            
             # Generate embeddings for chunks
             texts = [chunk.content for chunk in chunks]
+            logger.info(f"📊 Generating embeddings for {len(texts)} texts...")
             embeddings = self.generate_embeddings(texts)
+            logger.info(f"✅ Generated {len(embeddings)} embeddings successfully")
             
             # Prepare vectors for Pinecone
             vectors = []
@@ -88,29 +107,35 @@ class VectorStore:
             
             # Upsert vectors in batches
             batch_size = 100
+            total_batches = (len(vectors) + batch_size - 1) // batch_size
+            logger.info(f"📦 Upserting {len(vectors)} vectors in {total_batches} batches...")
+            
             for i in range(0, len(vectors), batch_size):
                 batch = vectors[i:i + batch_size]
+                batch_num = (i // batch_size) + 1
+                logger.info(f"📤 Processing batch {batch_num}/{total_batches} ({len(batch)} vectors)...")
                 self.index.upsert(vectors=batch)
             
-            logger.info(f"Stored {len(chunks)} chunks in vector database")
+            logger.info(f"✅ Successfully stored {len(chunks)} chunks in Pinecone vector database")
             return True
             
         except Exception as e:
-            logger.error(f"Error storing chunks: {e}")
-            return False
+            logger.error(f"❌ Error storing chunks in Pinecone: {e}")
+            raise Exception(f"Failed to store chunks in Pinecone: {str(e)}")
     
     def search_similar(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         """Search for similar chunks using semantic similarity"""
-        if not self.index:
-            logger.warning("Pinecone not available, returning empty results")
-            return []
-        
         try:
+            logger.info(f"🔍 Searching Pinecone for query: '{query[:50]}...'")
+            
             # Generate query embedding
             query_embedding = self.generate_embeddings([query])[0]
+            logger.info(f"📊 Generated query embedding successfully")
             
             # Search in Pinecone
             top_k = top_k or self.config.TOP_K_RESULTS
+            logger.info(f"🔎 Querying Pinecone with top_k={top_k}...")
+            
             results = self.index.query(
                 vector=query_embedding,
                 top_k=top_k,
@@ -128,12 +153,12 @@ class VectorStore:
                         "chunk_id": match.id
                     })
             
-            logger.info(f"Found {len(similar_chunks)} similar chunks for query")
+            logger.info(f"✅ Found {len(similar_chunks)} similar chunks for query using Pinecone (threshold: {self.config.SIMILARITY_THRESHOLD})")
             return similar_chunks
             
         except Exception as e:
-            logger.error(f"Error searching similar chunks: {e}")
-            return []
+            logger.error(f"❌ Error searching similar chunks in Pinecone: {e}")
+            raise Exception(f"Failed to search chunks in Pinecone: {str(e)}")
     
     def search_universal(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         """Universal search strategy for ANY question type"""
@@ -143,14 +168,11 @@ class VectorStore:
             return self.search_similar(query, top_k)
             
         except Exception as e:
-            logger.error(f"Error in universal search: {e}")
-            return []
+            logger.error(f"❌ Error in universal search in Pinecone: {e}")
+            raise Exception(f"Failed to perform universal search in Pinecone: {str(e)}")
     
     def delete_document_chunks(self, document_id: str) -> bool:
         """Delete all chunks for a specific document"""
-        if not self.index:
-            return False
-        
         try:
             # Query to find chunks for the document
             results = self.index.query(
@@ -164,26 +186,24 @@ class VectorStore:
             chunk_ids = [match.id for match in results.matches]
             if chunk_ids:
                 self.index.delete(ids=chunk_ids)
-                logger.info(f"Deleted {len(chunk_ids)} chunks for document {document_id}")
+                logger.info(f"✅ Deleted {len(chunk_ids)} chunks for document {document_id} from Pinecone")
             
             return True
             
         except Exception as e:
-            logger.error(f"Error deleting document chunks: {e}")
-            return False
+            logger.error(f"❌ Error deleting document chunks from Pinecone: {e}")
+            raise Exception(f"Failed to delete document chunks from Pinecone: {str(e)}")
     
     def get_index_stats(self) -> Dict[str, Any]:
         """Get statistics about the vector index"""
-        if not self.index:
-            return {"total_vectors": 0, "index_name": "not_available"}
-        
         try:
             stats = self.index.describe_index_stats()
             return {
                 "total_vectors": stats.total_vector_count,
                 "index_name": self.config.PINECONE_INDEX_NAME,
-                "dimension": stats.dimension
+                "dimension": stats.dimension,
+                "status": "connected"
             }
         except Exception as e:
-            logger.error(f"Error getting index stats: {e}")
-            return {"error": str(e)}
+            logger.error(f"❌ Error getting index stats from Pinecone: {e}")
+            raise Exception(f"Failed to get index stats from Pinecone: {str(e)}")

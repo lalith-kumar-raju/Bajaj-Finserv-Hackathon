@@ -224,276 +224,6 @@ class EnhancedDocumentProcessor:
         
         return chunks
 
-# Enhanced Vector Store
-class EnhancedVectorStore:
-    def __init__(self):
-        self.vectors = {}
-        self.documents = {}
-        self.vector_dimension = 384
-        self.cache = {}  # Simple cache for embeddings
-    
-    def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate enhanced embeddings with caching"""
-        embeddings = []
-        for text in texts:
-            # Check cache first
-            text_hash = hashlib.md5(text.encode()).hexdigest()
-            if text_hash in self.cache:
-                embeddings.append(self.cache[text_hash])
-                continue
-            
-            # Create enhanced hash-based embedding
-            hash_obj = hashlib.sha256(text.encode())
-            hash_bytes = hash_obj.digest()
-            
-            embedding = []
-            for i in range(self.vector_dimension):
-                byte_idx = i % len(hash_bytes)
-                embedding.append(float(hash_bytes[byte_idx]) / 255.0)
-            
-            # Cache the embedding
-            self.cache[text_hash] = embedding
-            embeddings.append(embedding)
-        
-        return embeddings
-    
-    def search_similar(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
-        """Enhanced search with better ranking"""
-        try:
-            query_embedding = self.generate_embeddings([query])[0]
-            
-            similarities = []
-            for chunk_id, vector in self.vectors.items():
-                similarity = self._cosine_similarity(query_embedding, vector)
-                similarities.append((chunk_id, similarity))
-            
-            similarities.sort(key=lambda x: x[1], reverse=True)
-            
-            top_k = top_k or self.config.TOP_K_RESULTS
-            results = []
-            
-            # Lower threshold for more results
-            threshold = self.config.SIMILARITY_THRESHOLD
-            
-            for chunk_id, score in similarities[:top_k]:
-                if score >= threshold:
-                    doc = self.documents.get(chunk_id, {})
-                    results.append({
-                        "content": doc.get("content", ""),
-                        "score": score,
-                        "metadata": doc.get("metadata", {}),
-                        "chunk_id": chunk_id
-                    })
-            
-            # If no results with current threshold, try with lower threshold
-            if not results and threshold > 0.3:
-                for chunk_id, score in similarities[:top_k]:
-                    if score >= 0.3:
-                        doc = self.documents.get(chunk_id, {})
-                        results.append({
-                            "content": doc.get("content", ""),
-                            "score": score,
-                            "metadata": doc.get("metadata", {}),
-                            "chunk_id": chunk_id
-                        })
-            
-            return results
-        except Exception as e:
-            logger.error(f"Error searching similar chunks: {e}")
-            return []
-    
-    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """Calculate cosine similarity"""
-        try:
-            dot_product = sum(a * b for a, b in zip(vec1, vec2))
-            norm1 = sum(a * a for a in vec1) ** 0.5
-            norm2 = sum(a * a for a in vec2) ** 0.5
-            
-            if norm1 == 0 or norm2 == 0:
-                return 0.0
-            
-            return dot_product / (norm1 * norm2)
-        except Exception:
-            return 0.0
-    
-    def get_index_stats(self) -> Dict[str, Any]:
-        """Get statistics"""
-        return {
-            "total_vectors": len(self.vectors),
-            "index_name": "enhanced_vector_store",
-            "dimension": self.vector_dimension
-        }
-
-    def search_universal(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
-        """Universal search strategy for ANY question type"""
-        try:
-            # Multi-pass search strategy
-            results = []
-            
-            # Pass 1: Semantic search
-            semantic_results = self._semantic_search(query, top_k or self.config.TOP_K_RESULTS)
-            results.extend(semantic_results)
-            
-            # Pass 2: Keyword search for better coverage
-            keyword_results = self._keyword_search(query, top_k or self.config.TOP_K_RESULTS)
-            results.extend(keyword_results)
-            
-            # Pass 3: Fuzzy search for partial matches
-            fuzzy_results = self._fuzzy_search(query, top_k or self.config.TOP_K_RESULTS)
-            results.extend(fuzzy_results)
-            
-            # Remove duplicates and rank by relevance
-            unique_results = self._deduplicate_and_rank(results)
-            
-            return unique_results[:top_k or self.config.TOP_K_RESULTS]
-            
-        except Exception as e:
-            logger.error(f"Error in universal search: {e}")
-            return []
-    
-    def _semantic_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """Semantic similarity search"""
-        try:
-            query_embedding = self.generate_embeddings([query])[0]
-            
-            similarities = []
-            for chunk_id, vector in self.vectors.items():
-                similarity = self._cosine_similarity(query_embedding, vector)
-                similarities.append((chunk_id, similarity))
-            
-            similarities.sort(key=lambda x: x[1], reverse=True)
-            
-            results = []
-            for chunk_id, score in similarities[:top_k]:
-                if score >= self.config.SIMILARITY_THRESHOLD:
-                    doc = self.documents.get(chunk_id, {})
-                    results.append({
-                        "content": doc.get("content", ""),
-                        "score": score,
-                        "metadata": doc.get("metadata", {}),
-                        "chunk_id": chunk_id,
-                        "search_type": "semantic"
-                    })
-            
-            return results
-        except Exception as e:
-            logger.error(f"Error in semantic search: {e}")
-            return []
-    
-    def _keyword_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """Keyword-based search for better coverage"""
-        try:
-            # Extract keywords from query
-            keywords = self._extract_keywords(query)
-            
-            results = []
-            for chunk_id, doc in self.documents.items():
-                content = doc.get("content", "").lower()
-                
-                # Calculate keyword match score
-                keyword_score = 0
-                for keyword in keywords:
-                    if keyword in content:
-                        keyword_score += 1
-                
-                if keyword_score > 0:
-                    # Normalize score
-                    normalized_score = keyword_score / len(keywords)
-                    
-                    results.append({
-                        "content": doc.get("content", ""),
-                        "score": normalized_score,
-                        "metadata": doc.get("metadata", {}),
-                        "chunk_id": chunk_id,
-                        "search_type": "keyword"
-                    })
-            
-            # Sort by score and return top results
-            results.sort(key=lambda x: x["score"], reverse=True)
-            return results[:top_k]
-            
-        except Exception as e:
-            logger.error(f"Error in keyword search: {e}")
-            return []
-    
-    def _fuzzy_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """Fuzzy search for partial matches"""
-        try:
-            # Extract words from query
-            query_words = query.lower().split()
-            
-            results = []
-            for chunk_id, doc in self.documents.items():
-                content = doc.get("content", "").lower()
-                content_words = content.split()
-                
-                # Calculate fuzzy match score
-                fuzzy_score = 0
-                for query_word in query_words:
-                    if len(query_word) > 2:  # Only consider words longer than 2 chars
-                        for content_word in content_words:
-                            if len(content_word) > 2:
-                                # Simple fuzzy matching
-                                if query_word in content_word or content_word in query_word:
-                                    fuzzy_score += 1
-                                elif self._similar_words(query_word, content_word):
-                                    fuzzy_score += 0.5
-                
-                if fuzzy_score > 0:
-                    # Normalize score
-                    normalized_score = fuzzy_score / len(query_words)
-                    
-                    results.append({
-                        "content": doc.get("content", ""),
-                        "score": normalized_score,
-                        "metadata": doc.get("metadata", {}),
-                        "chunk_id": chunk_id,
-                        "search_type": "fuzzy"
-                    })
-            
-            # Sort by score and return top results
-            results.sort(key=lambda x: x["score"], reverse=True)
-            return results[:top_k]
-            
-        except Exception as e:
-            logger.error(f"Error in fuzzy search: {e}")
-            return []
-    
-    def _extract_keywords(self, query: str) -> List[str]:
-        """Extract important keywords from query"""
-        # Remove common words
-        stop_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "can", "what", "how", "when", "where", "why", "which", "who"}
-        
-        words = query.lower().split()
-        keywords = [word for word in words if word not in stop_words and len(word) > 2]
-        
-        return keywords
-    
-    def _similar_words(self, word1: str, word2: str) -> bool:
-        """Check if two words are similar"""
-        if len(word1) < 3 or len(word2) < 3:
-            return False
-        
-        # Simple similarity check
-        common_chars = sum(1 for c in word1 if c in word2)
-        return common_chars >= min(len(word1), len(word2)) * 0.7
-    
-    def _deduplicate_and_rank(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Remove duplicates and rank by relevance"""
-        seen_chunks = set()
-        unique_results = []
-        
-        for result in results:
-            chunk_id = result["chunk_id"]
-            if chunk_id not in seen_chunks:
-                seen_chunks.add(chunk_id)
-                unique_results.append(result)
-        
-        # Sort by score
-        unique_results.sort(key=lambda x: x["score"], reverse=True)
-        
-        return unique_results
-
 # Enhanced Query Analyzer
 class EnhancedQueryAnalyzer:
     def __init__(self):
@@ -950,14 +680,22 @@ Please provide a comprehensive answer that directly addresses the question."""
 config = Config()
 document_processor = EnhancedDocumentProcessor()
 
-# Use real Pinecone instead of fallback
+# Always use real Pinecone for optimal performance
 try:
     from vector_store import VectorStore
     vector_store = VectorStore()
-    logger.info("Using real Pinecone vector store")
+    
+    # Verify Pinecone is properly initialized
+    if vector_store.index is None:
+        raise Exception("Pinecone index not available. Please check your Pinecone API key and configuration.")
+    
+    logger.info("✅ Using real Pinecone vector store for optimal performance")
+    
 except Exception as e:
-    logger.warning(f"Falling back to in-memory vector store: {e}")
-    vector_store = EnhancedVectorStore()
+    logger.error(f"❌ Failed to initialize Pinecone: {e}")
+    logger.error("Please ensure your Pinecone API key is correctly configured in the environment variables.")
+    logger.error("Required environment variables: PINECONE_API_KEY, PINECONE_ENVIRONMENT, PINECONE_INDEX_NAME")
+    raise Exception(f"Pinecone initialization failed: {str(e)}. Please check your configuration.")
 
 query_analyzer = EnhancedQueryAnalyzer()
 llm_processor = EnhancedLLMProcessor()
@@ -1014,7 +752,8 @@ async def health_check():
         
         return {
             "status": "healthy",
-            "vector_store": "connected" if stats.get("total_vectors", 0) >= 0 else "disconnected",
+            "vector_store": "connected" if stats.get("status") == "connected" else "disconnected",
+            "pinecone_stats": stats,
             "llm_processor": "ready",
             "document_processor": "ready"
         }
@@ -1022,7 +761,8 @@ async def health_check():
         logger.error(f"Health check failed: {e}")
         return {
             "status": "unhealthy",
-            "error": str(e)
+            "error": str(e),
+            "vector_store": "disconnected"
         }
 
 @app.get("/stats")
@@ -1046,7 +786,9 @@ async def get_stats():
             },
             "performance": {
                 "cached_documents": len(document_cache),
-                "total_embeddings": vector_stats.get("total_vectors", 0)
+                "total_embeddings": vector_stats.get("total_vectors", 0),
+                "vector_store_status": vector_stats.get("status", "unknown"),
+                "pinecone_index": vector_stats.get("index_name", "unknown")
             }
         }
     except Exception as e:
@@ -1076,8 +818,19 @@ async def run_hackrx(
             document_text = document_processor.download_document(request.documents)
             chunks = document_processor.chunk_text(document_text, document_id)
             
+            # Convert dictionary chunks to DocumentChunk objects for vector store
+            from models import DocumentChunk
+            document_chunks = []
+            for chunk in chunks:
+                doc_chunk = DocumentChunk(
+                    content=chunk["content"],
+                    metadata=chunk["metadata"],
+                    chunk_id=chunk["chunk_id"]
+                )
+                document_chunks.append(doc_chunk)
+            
             # Store chunks in vector database
-            vector_store.store_chunks(chunks)
+            vector_store.store_chunks(document_chunks)
             
             # Cache the processed document
             document_cache[document_id] = {
